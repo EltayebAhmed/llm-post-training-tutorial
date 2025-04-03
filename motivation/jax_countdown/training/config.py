@@ -27,7 +27,7 @@ class Config:
 
     num_train_steps: int = 500_000
     learning_rate: float = 0.0016
-    warmup_steps: int = 1000
+    warmup_steps: int = 3000 
     weight_decay: float = 0.1
     max_target_length: int = 20
     

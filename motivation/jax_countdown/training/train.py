@@ -29,6 +29,7 @@ import sys
 
 import jax
 import jax.numpy as jnp
+import functools
 import transformers
 
 from flax import linen as nn
@@ -122,8 +123,8 @@ def compute_weighted_cross_entropy(
 def train_step(
     state,
     inputs,
-    pad_token,
     dropout_rng: jnp.ndarray,
+    pad_token,
 ):
     """Perform a single training step."""
 
@@ -143,10 +144,12 @@ def train_step(
         mean_loss = loss / weight_sum
         return mean_loss, logits
 
-    step = state.step
-
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
     (mean_loss, logits), grads = grad_fn(state.params)
+    
+    # Average gradients across GPUs
+    grads = jax.lax.pmean(grads, axis_name="batch")
+
     new_state = state.apply_gradients(grads=grads)
 
     return new_state, mean_loss
@@ -184,8 +187,10 @@ def train_and_evaluate(config: Config, workdir: str):
 
     # Initialize Jax RNG states.
     rng = jax.random.PRNGKey(config.seed)
-    rng, init_rng = jax.random.split(rng)
     rng, dropout_rng = jax.random.split(rng)
+    
+    # Make sure different hosts have different dropout keys.
+    dropout_rng = jax.random.fold_in(dropout_rng, jax.process_index())
 
     print("Initializing model, optimizer, and step functions.")
     # Build Model and Optimizer
@@ -223,11 +228,16 @@ def train_and_evaluate(config: Config, workdir: str):
         dropout_rng=dropout_rng,
     )
 
+    state = jax_utils.replicate(state)
+
     # compile multidevice versions of train/eval/predict step fn.
-    jit_train_step = jax.jit(
-        train_step,
-        static_argnums=(2),
-        donate_argnums=1,
+    jit_train_step = jax.pmap(
+        functools.partial(
+            train_step,
+            pad_token=TOKENS["PAD"],
+        ),
+        donate_argnums=0,
+        axis_name="batch",
     )
 
     # Main Train Loop
@@ -247,7 +257,7 @@ def train_and_evaluate(config: Config, workdir: str):
 
         # Shard data to devices and do a training step.
         # batch = jax.tree_util.tree_map(lambda x: jnp.array(x), batch)
-        state, train_loss = jit_train_step(state, batch_input_ids, TOKENS["PAD"], dropout_rngs)
+        state, train_loss = jit_train_step(state, batch_input_ids, dropout_rngs)
         train_losses.append(train_loss)
 
         # Quick indication that training is happening.
