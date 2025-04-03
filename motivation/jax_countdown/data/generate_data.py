@@ -44,6 +44,8 @@ if __name__ == "__main__":
         seed=config.seed,
     )
     write_dataset_to_disk(dataset, config.output_filepath)
-    visualize_operand_histogram(dataset, n_bins=config.n_operands * 2)
+    n_bins = (config.max_operand - config.min_operand + 1) * 2 
+
+    visualize_operand_histogram(dataset, n_bins=n_bins)
     plt.savefig(config.output_filepath.replace(".csv", ".png"))
 
