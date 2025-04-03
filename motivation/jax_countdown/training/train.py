@@ -276,9 +276,10 @@ def train_and_evaluate(config: Config, workdir: str):
         save_checkpoint = step % config.checkpoint_every_steps == 0 or is_last_step
         if config.save_checkpoints and save_checkpoint:
             print("Saving checkpoint step %d.", step)
+            to_checkpoint = jax_utils.unreplicate(state)
+            checkpoints.save_checkpoint_multiprocess(workdir, to_checkpoint, step)
 
-            checkpoints.save_checkpoint_multiprocess(workdir, state, step)
-            model.save_pretrained(workdir, params=state.params)
+            model.save_pretrained(workdir, params=to_checkpoint.params)
 
 
         if is_last_step:
