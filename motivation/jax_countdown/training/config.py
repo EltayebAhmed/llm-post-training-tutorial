@@ -18,29 +18,43 @@
 """Default Hyperparameter configuration."""
 
 import dataclasses
+import os
+
+TRAIN_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "data", "data_train.csv"
+)
+
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class Config:
     """Hyperparameter configuration for language model training."""
-    train_file: str 
+
+    train_file: str = TRAIN_FILE
     vocab_size: int = 30_000
 
     num_train_steps: int = 500_000
     learning_rate: float = 0.0016
-    warmup_steps: int = 3000 
+    warmup_steps: int = 200
     weight_decay: float = 0.1
-    max_target_length: int = 20
-    
+    max_target_length: int = 30 
+    max_prompt_length: int = 25
+
     save_checkpoints: bool = True
     save_dir: str = "checkpoints"
     seed: int = 0
 
     log_every_steps: int = 5
-    checkpoint_every_steps: int = 10_000
+    checkpoint_every_steps: int = 20
 
-    emb_dim: int = 384 
-    num_layers: int = 6
-    num_heads: int = 4
-    mlp_dim: int = 1024
+    emb_dim: int = 512
+    num_layers: int = 12
+    num_heads: int = 8
+    mlp_dim: int = 2048
     batch_size: int = 128
 
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class ConfigRL(Config):
+    """Hyperparameter configuration for RL language model training."""
+    num_rollouts: int = 4
+    generation_length: int = 15

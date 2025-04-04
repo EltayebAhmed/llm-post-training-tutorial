@@ -2,7 +2,7 @@ tyro
 numpy
 matplotlib
 torch
-jax
+jax[cuda]
 transformers
 flax
 optax

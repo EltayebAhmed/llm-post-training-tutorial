@@ -26,7 +26,6 @@ This script trains a Transformer on a LM1B dataset.
 import itertools
 import os
 import sys
-from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -41,89 +40,12 @@ import optax
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from preprocessing import TOKENS, REVERSE_TOKENS, get_data_loader, load_dataset_from_file, decode_tensor
-from config import Config
+from sampling import sample
+from config import ConfigRL
+from train import compute_weighted_cross_entropy, create_learning_rate_schedule
 
 
-def rsqrt_schedule(
-    init_value: float,
-    shift: int = 0,
-):
-    """Applies a reverse square-root schedule.
 
-    The reverse square root schedule is simply `lr = init_value / sqrt(step)`.
-
-    Args:
-      init_value: Base learning rate (before applying the rsqrt schedule).
-      shift: How many steps the rsqrt should be shifted. Shifting the rsqrt
-        schedule makes it less steep in the beginning (close to 0).
-
-    Returns:
-      A schedule that applies the reverse square root.
-    """
-
-    def schedule(count):
-        return init_value * (count + shift) ** -0.5 * shift**0.5
-
-    return schedule
-
-
-def create_learning_rate_schedule(learning_rate: float, warmup_steps: int):
-    """Creates a rsqrt schedule with linear warmup."""
-    return optax.join_schedules(
-        [
-            optax.linear_schedule(
-                init_value=0,
-                end_value=learning_rate,
-                transition_steps=warmup_steps,
-            ),
-            rsqrt_schedule(init_value=learning_rate, shift=warmup_steps),
-        ],
-        boundaries=[warmup_steps],
-    )
-
-
-def compute_weighted_cross_entropy(
-    logits: jnp.ndarray, targets: jnp.ndarray, pad_token: int, eos_token: int, 
-    weights: Optional[jnp.ndarray] = None
-):
-    """Compute weighted cross entropy and entropy for log probs and targets.
-
-    Args:
-      logits: [batch, length, num_classes] float array.
-      targets: categorical targets [batch, length] int array.
-      pad_token: int, the padding token id.
-    Returns:
-      Tuple of scalar loss and batch normalizing factor.
-    """
-    if logits.ndim != targets.ndim + 1:
-        raise ValueError(
-            "Incorrect shapes. Got shape %s logits and %s targets"
-            % (str(logits.shape), str(targets.shape))
-        )
-    vocab_size = logits.shape[-1]
-
-    # Shift targets by one for auto-regressive loss.
-    targets = targets[:, 1:]
-    logits = logits[:, :-1, :]
-
-    # The mask is used to avoid training on padding tokens.
-    mask = targets != pad_token
-    after_eos = (targets == eos_token).cumsum(axis=-1) > 1
-    mask = jnp.logical_and(mask, ~after_eos)
-
-    mask = mask.astype(jnp.float32)[..., None]
-
-    targets = common_utils.onehot(
-        targets,
-        vocab_size,
-    )
-
-    loss = -jnp.sum(targets * nn.log_softmax(logits) * mask, axis=-1)
-    
-    if weights is not None:
-        loss = loss * weights[:, None]
-
-    return loss.sum(), mask
 
 
 # Primary training / eval / decode step functions.
@@ -133,9 +55,7 @@ def train_step(
     state,
     inputs,
     dropout_rng: jnp.ndarray,
-    weights: Optional[jnp.ndarray] = None,
-    pad_token: int = -1,
-    eos_token: int = -1,
+    pad_token,
 ):
     """Perform a single training step."""
 
@@ -153,8 +73,7 @@ def train_step(
         ).logits
 
         loss, mask = compute_weighted_cross_entropy(
-            logits=logits, targets=inputs, pad_token=pad_token,
-            eos_token=eos_token, weights=weights
+            logits=logits, targets=inputs, pad_token=pad_token
         )
         mean_loss = loss / mask.sum()
         return mean_loss, (logits, mask)
@@ -251,7 +170,6 @@ def train_and_evaluate(config: Config, workdir: str):
         functools.partial(
             train_step,
             pad_token=TOKENS["PAD"],
-            eos_token=TOKENS["EOS"],
         ),
         donate_argnums=0,
         axis_name="batch",
@@ -270,12 +188,14 @@ def train_and_evaluate(config: Config, workdir: str):
 
         # Shard data to devices and do a training step.
 
-        batch_input_ids, _, _ = common_utils.shard(batch_input_ids)   
-        state, train_loss, logits, mask = jit_train_step(state, batch_input_ids, dropout_rng)
+        batch_input_ids, prompts, rewards = common_utils.shard(batch_input_ids)
 
+        state, train_loss, logits, mask = jit_train_step(state, batch_input_ids, dropout_rng)
+        # if step > 50:
+        #     print(decode(logits[0, :5].argmax(axis=-1)))
+        #     breakpoint()
         train_losses.append(train_loss.mean())
         # Quick indication that training is happening.
-        breakpoint()
         if step < 5:
             print("Finished training step %d." % step)
 
