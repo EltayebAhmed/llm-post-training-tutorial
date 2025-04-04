@@ -83,7 +83,7 @@ def create_learning_rate_schedule(learning_rate: float, warmup_steps: int):
 
 
 def compute_weighted_cross_entropy(
-    logits: jnp.ndarray, targets: jnp.ndarray, pad_token: int, eos_token: int, 
+    logits: jnp.ndarray, targets: jnp.ndarray, pad_token: int,
     weights: Optional[jnp.ndarray] = None
 ):
     """Compute weighted cross entropy and entropy for log probs and targets.
@@ -108,8 +108,6 @@ def compute_weighted_cross_entropy(
 
     # The mask is used to avoid training on padding tokens.
     mask = targets != pad_token
-    after_eos = (targets == eos_token).cumsum(axis=-1) > 1
-    mask = jnp.logical_and(mask, ~after_eos)
 
     mask = mask.astype(jnp.float32)[..., None]
 
@@ -135,7 +133,6 @@ def train_step(
     dropout_rng: jnp.ndarray,
     weights: Optional[jnp.ndarray] = None,
     pad_token: int = -1,
-    eos_token: int = -1,
 ):
     """Perform a single training step."""
 
@@ -154,7 +151,7 @@ def train_step(
 
         loss, mask = compute_weighted_cross_entropy(
             logits=logits, targets=inputs, pad_token=pad_token,
-            eos_token=eos_token, weights=weights
+            weights=weights
         )
         mean_loss = loss / mask.sum()
         return mean_loss, (logits, mask)
@@ -251,7 +248,6 @@ def train_and_evaluate(config: Config, workdir: str):
         functools.partial(
             train_step,
             pad_token=TOKENS["PAD"],
-            eos_token=TOKENS["EOS"],
         ),
         donate_argnums=0,
         axis_name="batch",
@@ -275,7 +271,7 @@ def train_and_evaluate(config: Config, workdir: str):
 
         train_losses.append(train_loss.mean())
         # Quick indication that training is happening.
-        breakpoint()
+
         if step < 5:
             print("Finished training step %d." % step)
 

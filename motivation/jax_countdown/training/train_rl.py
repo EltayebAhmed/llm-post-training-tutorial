@@ -24,6 +24,7 @@ This script trains a Transformer on a LM1B dataset.
 # pytype: disable=attribute-error
 
 import itertools
+from math import e
 import os
 import sys
 
@@ -39,66 +40,32 @@ from flax.training import common_utils, train_state
 import optax
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-from preprocessing import TOKENS, REVERSE_TOKENS, get_data_loader, load_dataset_from_file, decode_tensor
-from sampling import sample
+from preprocessing import (
+    TOKENS,
+    REVERSE_TOKENS,
+    get_data_loader,
+    load_dataset_from_file,
+    decode_tensor,
+)
+from sampling import sample, HashableGPT2Config
 from config import ConfigRL
-from train import compute_weighted_cross_entropy, create_learning_rate_schedule
+from train import create_learning_rate_schedule, train_step, TrainState
+from reward import compute_reward
 
 
+def unshard(x: jnp.ndarray):
+    """Unshard a jax array.
+
+    Args:
+        x: A jax array.
+
+    Returns:
+        The unsharded array.
+    """
+    return jax.tree_util.tree_map(lambda x: x.reshape((-1,) + x.shape[2:]), x)
 
 
-
-# Primary training / eval / decode step functions.
-# -----------------------------------------------------------------------------
-
-def train_step(
-    state,
-    inputs,
-    dropout_rng: jnp.ndarray,
-    pad_token,
-):
-    """Perform a single training step."""
-
-    dropout_rng = jax.random.fold_in(dropout_rng, state.step)
-
-    def loss_fn(params):
-        """loss function used for training."""
-        mask = inputs != pad_token
-        position_ids = mask.cumsum(axis=-1, dtype=jnp.int32) - 1
-        logits = state.apply_fn(
-            input_ids=inputs,
-            position_ids=position_ids,
-            attention_mask=mask,
-             params=params, dropout_rng=dropout_rng, train=True
-        ).logits
-
-        loss, mask = compute_weighted_cross_entropy(
-            logits=logits, targets=inputs, pad_token=pad_token
-        )
-        mean_loss = loss / mask.sum()
-        return mean_loss, (logits, mask)
-
-    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-    (mean_loss, (logits, mask)), grads = grad_fn(state.params)
-
-    # Average gradients across GPUs
-    grads = jax.lax.pmean(grads, axis_name="batch")
-
-    new_state = state.apply_gradients(grads=grads)
-
-    return new_state, mean_loss, logits, mask
-
-
-class TrainState(train_state.TrainState):
-    dropout_rng: jnp.ndarray
-
-    def replicate(self):
-        return jax_utils.replicate(self).replace(
-            dropout_rng=common_utils.shard_prng_key(self.dropout_rng)
-        )
-
-
-def train_and_evaluate(config: Config, workdir: str):
+def train_and_evaluate(config: ConfigRL, workdir: str):
     """Runs a training and evaluation loop.
 
     Args:
@@ -117,12 +84,16 @@ def train_and_evaluate(config: Config, workdir: str):
     )
 
     train_data_loader = get_data_loader(
-        train_ds, config.batch_size, config.max_target_length, config.max_prompt_length, shuffle=True
+        train_ds,
+        config.batch_size,
+        config.max_target_length,
+        config.max_prompt_length,
+        shuffle=True,
     )
 
     # Initialize Jax RNG states.
     rng = jax.random.PRNGKey(config.seed)
-    rng, dropout_rng = jax.random.split(rng)
+    rng, dropout_rng, generation_rng = jax.random.split(rng, 3)
 
     # Make sure different hosts have different dropout keys.
     dropout_rng = jax.random.split(dropout_rng, jax.local_device_count())
@@ -130,23 +101,26 @@ def train_and_evaluate(config: Config, workdir: str):
     print("Initializing model, optimizer, and step functions.")
     # Build Model and Optimizer
     # ---------------------------------------------------------------------------
-    model_config = transformers.GPT2Config(
-        vocab_size=len(TOKENS),
-        n_positions=config.max_target_length,
-        n_embd=config.emb_dim,
-        n_layer=config.num_layers,
-        n_head=config.num_heads,
-        n_inner=config.mlp_dim,
-    )
-
+    # model_config = HashableGPT2Config(
+    #     vocab_size=len(TOKENS),
+    #     n_positions=config.max_target_length,
+    #     n_embd=config.emb_dim,
+    #     n_layer=config.num_layers,
+    #     n_head=config.num_heads,
+    #     n_inner=config.mlp_dim,
+    # )
+    model_config = HashableGPT2Config.from_pretrained(config.base_model_path)
     model = transformers.FlaxGPT2LMHeadModel(model_config, seed=config.seed)
-
-    param_count = sum(p.size for p in jax.tree_leaves(model.params))
-    print("Model has %d parameters.", param_count)
 
     learning_rate_fn = create_learning_rate_schedule(
         learning_rate=config.learning_rate, warmup_steps=config.warmup_steps
     )
+    # learning_rate_fn = optax.linear_schedule(
+    #     init_value=config.learning_rate,
+    #     end_value=0.0,
+    #     transition_steps=config.num_train_steps,
+    # )
+
 
     optimizer = optax.adamw(
         learning_rate_fn,
@@ -156,12 +130,22 @@ def train_and_evaluate(config: Config, workdir: str):
         weight_decay=config.weight_decay,
     )
 
+    restored_params = checkpoints.restore_checkpoint(
+        config.base_model_path,
+        target=None,
+        step=None,
+    )
     state = TrainState.create(
         apply_fn=model.__call__,
-        params=model.params,
+        params=restored_params["params"],
         tx=optimizer,
         dropout_rng=dropout_rng,
     )
+
+    model.params = state.params
+
+    param_count = sum(p.size for p in jax.tree_leaves(state.params))
+    print("Model has %d parameters.", param_count)
 
     state = jax_utils.replicate(state)
 
@@ -181,26 +165,74 @@ def train_and_evaluate(config: Config, workdir: str):
     print("Starting training loop.")
 
     train_losses = []
+    train_rewards = []
 
     infinite_iterator = itertools.cycle(train_data_loader)
-    for step, batch_input_ids in enumerate(infinite_iterator):
+    for step, batch in enumerate(infinite_iterator):
         is_last_step = step == config.num_train_steps - 1
 
         # Shard data to devices and do a training step.
+        _, prompts, targets = batch
 
-        batch_input_ids, prompts, rewards = common_utils.shard(batch_input_ids)
+        generation_rng = jax.random.fold_in(generation_rng, step)
 
-        state, train_loss, logits, mask = jit_train_step(state, batch_input_ids, dropout_rng)
-        # if step > 50:
-        #     print(decode(logits[0, :5].argmax(axis=-1)))
-        #     breakpoint()
+        parallel_generation_rng = jax.random.split(
+            generation_rng, jax.local_device_count()
+        )
+
+        # replicate each prompt n_rollouts times
+        prompts = jnp.repeat(prompts, config.num_rollouts, axis=0)
+        targets = jnp.repeat(targets, config.num_rollouts, axis=0)
+
+        generations = sample(
+            model_config,
+            transformers.FlaxGPT2LMHeadModel,
+            state.params,
+            common_utils.shard(prompts),
+            TOKENS["PAD"],
+            TOKENS["EOS"],
+            parallel_generation_rng,
+            config.generation_length,
+            config.temperature,
+        )
+        generations = unshard(generations)
+
+        rewards = compute_reward(
+            generations,
+            targets,
+        )
+
+        # log reward before processing it
+        train_rewards.append(rewards.mean())
+
+        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-6)
+        # rewards = rewards.astype(jnp.float32) / config.reward_scale
+
+        # Compute RLOO baseline.
+        rewards = rewards.reshape(config.num_rollouts, -1)
+
+        rewards = rewards - rewards.mean(axis=0, keepdims=True)
+        rewards = rewards.reshape(-1)
+
+        generations = common_utils.shard(generations)
+        rewards = common_utils.shard(rewards)
+
+        state, train_loss, logits, mask = jit_train_step(
+            state, generations, dropout_rng, weights=rewards
+        )
+
         train_losses.append(train_loss.mean())
+
+
         # Quick indication that training is happening.
         if step < 5:
             print("Finished training step %d." % step)
 
-        if step % config.log_every_steps == 0 or is_last_step:
-            print("Step %d: Training Loss %.4f" %( step, train_losses[-1]))
+        if step % config.log_every_steps == 0 or is_last_step or step < 5:
+            print(
+                "Step %d: Training Loss %.4f Reward %.4f "
+                % (step, train_losses[-1], train_rewards[-1])
+            )
             train_losses = []
 
         # Save a checkpoint on one host after every checkpoint_freq steps.
@@ -223,5 +255,5 @@ if __name__ == "__main__":
 
     print("Running training script.")
 
-    cfg = tyro.cli(Config)
+    cfg = tyro.cli(ConfigRL)
     train_and_evaluate(cfg, cfg.save_dir)

@@ -37,7 +37,7 @@ class Config:
     warmup_steps: int = 200
     weight_decay: float = 0.1
     max_target_length: int = 30 
-    max_prompt_length: int = 25
+    max_prompt_length: int = 15
 
     save_checkpoints: bool = True
     save_dir: str = "checkpoints"
@@ -56,5 +56,12 @@ class Config:
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class ConfigRL(Config):
     """Hyperparameter configuration for RL language model training."""
+    base_model_path: str = "/mount/llm-post-training-tutorial/checkpoint_post_fix/checkpoint_680"
     num_rollouts: int = 4
-    generation_length: int = 15
+    generation_length: int = 9
+    temperature = 0.3
+    
+    learning_rate: float = 5e-5
+    warmup_steps: int = 1
+
+    num_train_steps: int = 5

@@ -3,10 +3,11 @@ import re
 
 import sys
 
-from flax.training import checkpoints
+from flax import jax_utils
+from flax.training import checkpoints, common_utils, train_state
 import jax
 import jax.numpy as jnp
-from torch import eq
+import optax
 import transformers
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
@@ -17,7 +18,7 @@ from preprocessing import (
     get_data_loader,
     load_dataset_from_file,
 )
-from sampling import sample
+from sampling import sample, HashableGPT2Config
 
 
 
@@ -81,50 +82,66 @@ if __name__ == "__main__":
         "/mount/llm-post-training-tutorial/motivation/jax_countdown/data/data_train.csv"
     )
     dataset = load_dataset_from_file(path)
-    dataloader = get_data_loader(dataset, batch_size=16, seq_len=31, prompt_seq_len=15)
+    batch_size = 16
+    dataloader = get_data_loader(dataset, batch_size=batch_size, seq_len=31, prompt_seq_len=15)
 
-    config = transformers.GPT2Config.from_pretrained("/mount/llm-post-training-tutorial/checkpoints/")
+    config = HashableGPT2Config.from_pretrained("/mount/llm-post-training-tutorial/checkpoints/")
     model = transformers.FlaxGPT2LMHeadModel(config)
-    state = checkpoints.restore_checkpoint(
-        "/mount/llm-post-training-tutorial/checkpoint_post_fix/checkpoint_680",
-        # "/mount/llm-post-training-tutorial/long_run/checkpoint_6780",
+    model_path = "/mount/llm-post-training-tutorial/checkpoint_post_fix/checkpoint_680"
+    
+    # state = checkpoints.restore_checkpoint(
+    #     model_path,
+    #     target=None,
+    #     step=None,
+    # )
+    # model.params = state["params"]
+
+    optimizer = optax.adamw(
+        learning_rate=0.0016,
+        b1=0.9,
+        b2=0.98,
+        eps=1e-9,
+        weight_decay=0.01,
+    )
+
+    prng = jax.random.PRNGKey(0)
+
+    restored_params = checkpoints.restore_checkpoint(
+        model_path,
         target=None,
         step=None,
     )
+    state = train_state.TrainState.create(
+        apply_fn=model.__call__,
+        params=restored_params["params"],
+        tx=optimizer,
+    )
 
-    model.params = state["params"]
+    model.params = state.params
 
-    prng = jax.random.PRNGKey(0)
+
+    
     for batch in dataloader:
 
         seq, prompt, res = batch
 
+        prng = jax.random.fold_in(prng, 0)
+
+
         print(f"{prompt.shape=}")
         result = sample(
-            model,
-            prompt[:, :],
+            model.config,
+            model.__class__,
+            jax_utils.replicate(model.params),
+            common_utils.shard(prompt),
             TOKENS["PAD"],
-            prng,
+            TOKENS["EOS"],
+            jax.random.split(prng, jax.local_device_count()),
             9,
-            temperature=0.1,
-        )
-        print(*enumerate(decode_tensor(result)), sep="\n")
-        print(list(enumerate(compute_reward(result, res).tolist())))
+            0.05,
+        ).reshape(batch_size, -1)
+        # print(*enumerate(decode_tensor(result)), sep="\n")
+        # print(list(enumerate(compute_reward(result, res).tolist())))
+        print(compute_reward(result, res))
+        print(*decode_tensor(result), sep="\n")
         breakpoint()
-
-        # for line in seq:
-        #     line = line.tolist()
-        #     line = [REVERSE_TOKENS.get(i, "") for i in line]
-        #     print(" ".join(line))
-        #     print(list(enumerate(line)))
-        # index = int(input("Index to change: "))
-        # value = int(input("Value to change to: "))
-        # seq = seq.at[0, index].set(value)
-
-        # print("Modified sequence:")
-        # for line in seq:
-        #     line = line.tolist()
-        #     line = [REVERSE_TOKENS.get(i, "") for i in line]
-        #     print(" ".join(line))
-        #     print(list(enumerate(line)))
-        # print(compute_reward(seq, res))
