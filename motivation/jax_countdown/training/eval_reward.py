@@ -67,11 +67,11 @@ if __name__ == "__main__":
     data_path = (
         "/mount/llm-post-training-tutorial/motivation/jax_countdown/data/data_test.csv"
     )
-data_path = os.path.join(__file__, "..", "..", "data", "data_test.csv")
+DEFUALT_DATA = os.path.join(__file__, "..", "..", "data", "data_test.csv")
 
 
 def run_eval(
-    data_path: str, model_path: str, batch_size: int = 128, num_datapoints: int = 1024
+    model_path: str, data_path: str= DEFUALT_DATA, batch_size: int = 128, num_datapoints: int = 1024
 ):
     dataset = load_dataset_from_file(data_path)
 
