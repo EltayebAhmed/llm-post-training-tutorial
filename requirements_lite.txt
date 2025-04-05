@@ -1,0 +1,5 @@
+# Only include requirements not already available in Colab
+tyro
+transformers
+flax
+optax
