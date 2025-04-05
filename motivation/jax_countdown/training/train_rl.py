@@ -130,8 +130,9 @@ def train_and_evaluate(config: ConfigRL, workdir: str):
         weight_decay=config.weight_decay,
     )
 
+    checkpoint_path = os.path.abspath(config.base_model_path)
     restored_params = checkpoints.restore_checkpoint(
-        config.base_model_path,
+        checkpoint_path,
         target=None,
         step=None,
     )

@@ -43,9 +43,14 @@ if __name__ == "__main__":
         alpha=config.alpha,
         seed=config.seed,
     )
-    write_dataset_to_disk(dataset, config.output_filepath)
-    n_bins = (config.max_operand - config.min_operand + 1) * 2 
+    print(f"Generated {len(dataset)} samples.")
 
+    write_dataset_to_disk(dataset, config.output_filepath)
+    print(f"Dataset written to {config.output_filepath}")
+    
+    
+    n_bins = (config.max_operand - config.min_operand + 1) * 2 
     visualize_operand_histogram(dataset, n_bins=n_bins)
     plt.savefig(config.output_filepath.replace(".csv", ".png"))
+    print(f"Histogram saved to {config.output_filepath.replace('.csv', '.png')}")
 

@@ -23,7 +23,7 @@ from preprocessing import (
 )
 from sampling import sample, HashableGPT2Config
 from reward import compute_reward, extract_and_validate_equation
-
+import tyro
 
 class OperandHistogramCounter:
     def __init__(self, n_operands: int = 4):
@@ -59,20 +59,21 @@ class OperandHistogramCounter:
         plt.hist(self.rewards, bins=50)
         plt.xlabel("Reward")
         plt.ylabel("Frequency")
-        plt.title("Reward Histogram")
+        mean = sum(self.rewards) / len(self.rewards)
+        plt.title(f"Reward Histogram, {mean=:.2f}")
         plt.show()
 
+        plt.savefig("reward_histogram.png")
 
-if __name__ == "__main__":
-    data_path = (
-        "/mount/llm-post-training-tutorial/motivation/jax_countdown/data/data_test.csv"
-    )
-DEFUALT_DATA = os.path.join(__file__, "..", "..", "data", "data_test.csv")
 
+
+DEFUALT_DATA = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "data_test.csv")
+DEFAULT_MODEL = os.path.abspath(DEFUALT_DATA)
 
 def run_eval(
     model_path: str, data_path: str= DEFUALT_DATA, batch_size: int = 128, num_datapoints: int = 1024
 ):
+
     dataset = load_dataset_from_file(data_path)
 
     dataset.data = dataset.data[:num_datapoints]
@@ -94,6 +95,7 @@ def run_eval(
 
     prng = jax.random.PRNGKey(0)
 
+    model_path = os.path.abspath(model_path)
     restored_params = checkpoints.restore_checkpoint(
         model_path,
         target=None,
@@ -123,14 +125,17 @@ def run_eval(
             0.01,
         ).reshape(batch_size, -1)
 
-        rewards = compute_reward(result, res)
+        rewards = compute_reward(result, res).ravel()
         sum_ += rewards.sum().item()
         count += rewards.size
 
-        for reward in result.tolist():
-            histogram.add(row)
+        for row, reward in zip(result.tolist(), rewards.tolist()):
+            histogram.add(row, reward)
 
 
         print(f"{sum_=}, {count=}, {sum_/count=}")
-    raise Exception("Print/plot histogram of rewards")
+    histogram.plot_reward_histogram()
     # histogram.print_report()
+
+if __name__ == "__main__":
+    tyro.cli(run_eval)
