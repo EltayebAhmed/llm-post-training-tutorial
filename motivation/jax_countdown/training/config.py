@@ -34,7 +34,7 @@ class Config:
 
     num_train_steps: int = 500_000
     learning_rate: float = 0.0016
-    warmup_steps: int = 200
+    warmup_steps: int = 3000
     weight_decay: float = 0.1
     max_target_length: int = 30 
     max_prompt_length: int = 15
@@ -47,10 +47,10 @@ class Config:
     checkpoint_every_steps: int = 20
 
     emb_dim: int = 512
-    num_layers: int = 12
+    num_layers: int = 6
     num_heads: int = 8
     mlp_dim: int = 2048
-    batch_size: int = 128
+    batch_size: int = 16384
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)

@@ -21,7 +21,21 @@ from preprocessing import (
 from sampling import sample, HashableGPT2Config
 
 
+def extract_and_validate_equation(equation: list[int]):
+    processed = [REVERSE_TOKENS.get(i, "") for i in equation]
 
+    processed = "".join(processed) 
+    # Remove the EOS and PAD tokens.
+    processed = re.sub("EOS.*", "", processed)
+
+    # Remove the question, leaving only the solution
+    processed = processed.split(":") 
+    assert len(processed) == 3, "The solution is not in the right format."
+
+    processed = processed[-1]
+    assert re.match(r"^\d([*+-]\d){3}$", processed), "Equation is not valid."
+
+    return processed
 
 def compute_reward(
     generations: jnp.ndarray,
@@ -39,28 +53,22 @@ def compute_reward(
     Returns:
         jnp.ndarray: The computed rewards.
     """
-    tokens = generations
 
-    tokens = tokens.tolist()
-    tokens = [[REVERSE_TOKENS.get(i, "") for i in entry] for entry in tokens]
+    if generations.ndim == 1:
+        # Add batch dimension
+        generations = generations[None, :]
 
-    tokens = ["".join(entry) for entry in tokens]
-    # Remove the EOS and PAD tokens.
-    tokens = [re.sub("EOS.*", "", x) for x in tokens]
+    assert generations.ndim == 2, "Generations should be 2D."
 
-    # Remove the question, leaving only the solution
-    equations = [x.split(":") for x in tokens]
+    equations = generations.tolist()
     results = []
 
     LARGE_VALUE = 10 ** 6
     for equation in equations:
         try:
-            assert len(equation) == 3, "The solution is not in the right format."
-            equation = equation[-1]
-
-            assert re.match(r"^\d([*+-]\d){3}$", equation), "Equation is not valid."
-
+            equation = extract_and_validate_equation(equation)
             value = eval(equation)
+
             assert isinstance(value, int), "The result is not a number."
             # Avoid overflow and underflow. 
             value = min(value, LARGE_VALUE)
@@ -73,7 +81,7 @@ def compute_reward(
     results = jnp.array(results)
     # Compute the rewards as the difference between the targets and the results.
     rewards = -jnp.abs(targets - results).clip(max=clip)
-    rewards = jnp.where(rewards == invalid, -clip - 1, rewards)
+    rewards = jnp.where(results == invalid, -clip - 1, rewards)
     return rewards
 
 
