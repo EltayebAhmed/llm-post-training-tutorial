@@ -23,25 +23,32 @@ This script trains a Transformer on a LM1B dataset.
 # pytype: disable=wrong-arg-count
 # pytype: disable=attribute-error
 
+import functools
 import itertools
 import os
 import sys
 from typing import Optional
 
-import jax
-import jax.numpy as jnp
-import functools
-import transformers
-
 from flax import linen as nn
 from flax import jax_utils
 from flax.training import checkpoints
 from flax.training import common_utils, train_state
+import jax
+import jax.numpy as jnp
 import optax
+import transformers
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-from preprocessing import TOKENS, REVERSE_TOKENS, get_data_loader, load_dataset_from_file, decode_tensor
 from config import Config
+from preprocessing import (
+    REVERSE_TOKENS,
+    TOKENS,
+    decode_tensor,
+    get_data_loader,
+    load_dataset_from_file,
+)
+
+
 
 
 def rsqrt_schedule(
@@ -83,8 +90,10 @@ def create_learning_rate_schedule(learning_rate: float, warmup_steps: int):
 
 
 def compute_weighted_cross_entropy(
-    logits: jnp.ndarray, targets: jnp.ndarray, pad_token: int,
-    weights: Optional[jnp.ndarray] = None
+    logits: jnp.ndarray,
+    targets: jnp.ndarray,
+    pad_token: int,
+    weights: Optional[jnp.ndarray] = None,
 ):
     """Compute weighted cross entropy and entropy for log probs and targets.
 
@@ -117,15 +126,16 @@ def compute_weighted_cross_entropy(
     )
 
     loss = -jnp.sum(targets * nn.log_softmax(logits) * mask, axis=-1)
-    
+
     if weights is not None:
         loss = loss * weights[:, None]
 
     return loss.sum(), mask
 
 
-# Primary training / eval / decode step functions.
+# Primary training 
 # -----------------------------------------------------------------------------
+
 
 def train_step(
     state,
@@ -146,12 +156,13 @@ def train_step(
             input_ids=inputs,
             position_ids=position_ids,
             attention_mask=mask,
-             params=params, dropout_rng=dropout_rng, train=True
+            params=params,
+            dropout_rng=dropout_rng,
+            train=True,
         ).logits
 
         loss, mask = compute_weighted_cross_entropy(
-            logits=logits, targets=inputs, pad_token=pad_token,
-            weights=weights
+            logits=logits, targets=inputs, pad_token=pad_token, weights=weights
         )
         mean_loss = loss / mask.sum()
         return mean_loss, (logits, mask)
@@ -176,8 +187,8 @@ class TrainState(train_state.TrainState):
         )
 
 
-def train_and_evaluate(config: Config, workdir: str):
-    """Runs a training and evaluation loop.
+def training_loop(config: Config, workdir: str):
+    """Runs a training_loop.
 
     Args:
       config: Configuration to use.
@@ -195,7 +206,11 @@ def train_and_evaluate(config: Config, workdir: str):
     )
 
     train_data_loader = get_data_loader(
-        train_ds, config.batch_size, config.max_target_length, config.max_prompt_length, shuffle=True
+        train_ds,
+        config.batch_size,
+        config.max_target_length,
+        config.max_prompt_length,
+        shuffle=True,
     )
 
     # Initialize Jax RNG states.
@@ -266,8 +281,10 @@ def train_and_evaluate(config: Config, workdir: str):
 
         # Shard data to devices and do a training step.
 
-        batch_input_ids, _, _ = common_utils.shard(batch_input_ids)   
-        state, train_loss, logits, mask = jit_train_step(state, batch_input_ids, dropout_rng)
+        batch_input_ids, _, _ = common_utils.shard(batch_input_ids)
+        state, train_loss, logits, mask = jit_train_step(
+            state, batch_input_ids, dropout_rng
+        )
 
         train_losses.append(train_loss.mean())
         # Quick indication that training is happening.
@@ -276,7 +293,7 @@ def train_and_evaluate(config: Config, workdir: str):
             print("Finished training step %d." % step)
 
         if step % config.log_every_steps == 0 or is_last_step:
-            print("Step %d: Training Loss %.4f" %( step, train_losses[-1]))
+            print("Step %d: Training Loss %.4f" % (step, train_losses[-1]))
             train_losses = []
 
         # Save a checkpoint on one host after every checkpoint_freq steps.

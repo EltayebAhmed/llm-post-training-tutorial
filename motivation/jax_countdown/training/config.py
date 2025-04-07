@@ -19,6 +19,7 @@
 
 import dataclasses
 import os
+from typing import Optional
 
 TRAIN_FILE = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data", "data_train.csv"
@@ -30,6 +31,7 @@ class Config:
     """Hyperparameter configuration for language model training."""
 
     train_file: str = TRAIN_FILE
+    validation_file: Optional[str] = None
     vocab_size: int = 30_000
 
     num_train_steps: int = 500_000

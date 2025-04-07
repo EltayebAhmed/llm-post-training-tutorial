@@ -1,6 +1,5 @@
 import os
 import re
-
 import sys
 
 from flax import jax_utils
@@ -18,24 +17,35 @@ from preprocessing import (
     get_data_loader,
     load_dataset_from_file,
 )
-from sampling import sample, HashableGPT2Config
+from sampling import HashableGPT2Config, sample
+
+
 
 
 def extract_and_validate_equation(equation: list[int]):
+    """Extract an equation from the full sequence.
+
+    Throws an error if the sequence is not valid. Assumes
+     operands are a single digits and that there are 4 operands.
+    """
     processed = [REVERSE_TOKENS.get(i, "") for i in equation]
 
-    processed = "".join(processed) 
+    processed = "".join(processed)
     # Remove the EOS and PAD tokens.
     processed = re.sub("EOS.*", "", processed)
 
     # Remove the question, leaving only the solution
-    processed = processed.split(":") 
+    processed = processed.split(":")
     assert len(processed) == 3, "The solution is not in the right format."
 
     processed = processed[-1]
+    
     assert re.match(r"^\d([*+-]\d){3}$", processed), "Equation is not valid."
 
+    assert isinstance(eval(processed), int), "The result is not a number."
+
     return processed
+
 
 def compute_reward(
     generations: jnp.ndarray,
@@ -44,7 +54,7 @@ def compute_reward(
     clip: int = 100,
 ) -> jnp.ndarray:
     """Compute the rewards for the generations.
-    
+
     Assumes operands are <10 and that there are 4 operands.
     Args:
         generations (jnp.ndarray): The generations to compute the rewards for.
@@ -63,14 +73,13 @@ def compute_reward(
     equations = generations.tolist()
     results = []
 
-    LARGE_VALUE = 10 ** 6
+    LARGE_VALUE = 10**6
     for equation in equations:
         try:
             equation = extract_and_validate_equation(equation)
             value = eval(equation)
 
-            assert isinstance(value, int), "The result is not a number."
-            # Avoid overflow and underflow. 
+            # Avoid overflow and underflow.
             value = min(value, LARGE_VALUE)
             value = max(value, -LARGE_VALUE)
 
@@ -79,6 +88,7 @@ def compute_reward(
         results.append(value)
 
     results = jnp.array(results)
+    
     # Compute the rewards as the difference between the targets and the results.
     rewards = -jnp.abs(targets - results).clip(max=clip)
     rewards = jnp.where(results == invalid, -clip - 1, rewards)
@@ -91,12 +101,16 @@ if __name__ == "__main__":
     )
     dataset = load_dataset_from_file(path)
     batch_size = 16
-    dataloader = get_data_loader(dataset, batch_size=batch_size, seq_len=31, prompt_seq_len=15)
+    dataloader = get_data_loader(
+        dataset, batch_size=batch_size, seq_len=31, prompt_seq_len=15
+    )
 
-    config = HashableGPT2Config.from_pretrained("/mount/llm-post-training-tutorial/checkpoints/")
+    config = HashableGPT2Config.from_pretrained(
+        "/mount/llm-post-training-tutorial/checkpoints/"
+    )
     model = transformers.FlaxGPT2LMHeadModel(config)
     model_path = "/mount/llm-post-training-tutorial/checkpoint_post_fix/checkpoint_680"
-    
+
     # state = checkpoints.restore_checkpoint(
     #     model_path,
     #     target=None,
@@ -127,14 +141,11 @@ if __name__ == "__main__":
 
     model.params = state.params
 
-
-    
     for batch in dataloader:
 
         seq, prompt, res = batch
 
         prng = jax.random.fold_in(prng, 0)
-
 
         print(f"{prompt.shape=}")
         result = sample(

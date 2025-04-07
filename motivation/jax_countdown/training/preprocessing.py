@@ -1,14 +1,9 @@
 from typing import Callable
+
+import jax.numpy as jnp
 import torch
 import torch.utils.data
-import sys
-import os
-import jax.numpy as jnp
-from typing import Callable
-import numpy as np
 
-# Gaurantees that the module can be imported from the parent directory.
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 TOKENS = {
     "0": 0,
@@ -55,15 +50,15 @@ def tokenize(entry: str, add_eos_token: bool = True) -> jnp.ndarray:
     return jnp.array(tokens)
 
 
-# Example dataset class
 class CountdownDataset(torch.utils.data.Dataset):
     def __init__(self, data: list[str]):
-        """Torch dataset for the example file.
+        """Torch Dataset for the Countdown dataset.
 
+        Returns for each entry, the tokenized version of the full sequence,
+            the tokenized prompt and the answer as an integer value.
         Args:
-            data (list[tuple[str, str]]): Each entry in the list is
-                an entry in the dataset. The tuple contains the equation
-                and the result.
+            data (list[str]): The dataset. Each element is a string in the format
+
         """
         self.data = data
 
@@ -85,13 +80,15 @@ class CountdownDataset(torch.utils.data.Dataset):
 def collate_single_tensor(
     batch: list[jnp.ndarray], seq_len: int, padding_side: str = "right"
 ) -> jnp.ndarray:
-    """Collator function for the DataLoader.
+    """Concatenates a list of tensors into a single tensor.
 
+    Adds padding as needed.
     Args:
-        batch (list[jnp.ndarray]): The batch to collate.
-
+        batch (list[jnp.ndarray]): The list of tensors to concatenate.
+        seq_len (int): The length of the sequence to pad to.
+        padding_side (str): The side to pad on. Can be "left" or "right".
     Returns:
-        jnp.ndarray: The collated batch.
+        jnp.ndarray: The concatenated tensor.
     """
     max_len = max([len(x) for x in batch])
     assert max_len <= seq_len, f"All sequences must be shorter"

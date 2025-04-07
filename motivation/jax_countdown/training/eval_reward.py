@@ -12,6 +12,7 @@ import optax
 import transformers
 import collections
 import matplotlib.pyplot as plt
+from transformers.agents import prompts
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from preprocessing import (
@@ -26,9 +27,10 @@ from reward import compute_reward, extract_and_validate_equation
 import tyro
 
 class OperandHistogramCounter:
-    def __init__(self, n_operands: int = 4):
-        self.counts = [collections.defaultdict(int) for _ in range(n_operands)]
+    def __init__(self, n_operands: int = 4, model_name: str = "model"):
+        self.operand_log = [[] for i in range(n_operands)]
         self.rewards = []
+        self.model_name = model_name
 
     def add(self, problem: list[int], reward: Optional[int] = None):
 
@@ -40,30 +42,28 @@ class OperandHistogramCounter:
         operands = re.split(r"[*+-]", eqn)
         operands = [int(i) for i in operands]
         for i, operand in enumerate(operands):
-            self.counts[i][operand] += 1
+            self.operand_log[i].append( operand)
 
         if reward is not None:
             self.rewards.append(reward)
 
-    def print_report(self, norm=True):
-        for i, counter in enumerate(self.counts):
-            print(f"Operand {i}:")
-            denominator = sum(counter.values()) if norm else 1
+    def plot_histograms_per_operand(self, n_bins: int = 20):
+        """Plots histograms for each operand."""
+        fig, axs = plt.subplots(len(self.operand_log), 1, figsize=(10, 10))
+        fig.tight_layout(pad=3.0)
+        for i, operand in enumerate(self.operand_log):
+            axs[i].hist(operand, bins=n_bins, density=True)
+            axs[i].set_xlabel(f"Operand {i + 1}")
+            axs[i].set_ylabel("Density")
+            mean = sum(operand) / len(operand)
+            axs[i].set_title(f"{self.model_name} Histogram of Operand {i + 1}, {mean=:.2f}")
 
-            for operand, count in sorted(counter.items()):
-                print(f"  {operand}: {count / denominator :.4f}")
-            print()
-
-    def plot_reward_histogram(self):
-
-        plt.hist(self.rewards, bins=50)
+    def plot_reward_histogram(self, n_bins: int = 50):
+        plt.hist(self.rewards, bins=n_bins, density=True)
         plt.xlabel("Reward")
-        plt.ylabel("Frequency")
+        plt.ylabel("Density")
         mean = sum(self.rewards) / len(self.rewards)
-        plt.title(f"Reward Histogram, {mean=:.2f}")
-        plt.show()
-
-        plt.savefig("reward_histogram.png")
+        plt.title(f"{self.model_name} Reward Histogram, {mean=:.2f}")
 
 
 
@@ -71,7 +71,9 @@ DEFUALT_DATA = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", 
 DEFAULT_MODEL = os.path.abspath(DEFUALT_DATA)
 
 def run_eval(
-    model_path: str, data_path: str= DEFUALT_DATA, batch_size: int = 128, num_datapoints: int = 1024
+    model_path: str, data_path: str= DEFUALT_DATA, batch_size: int = 128, num_datapoints: int = 1024,
+    model_name: str = "model",
+    verbose: bool = False,
 ):
 
     dataset = load_dataset_from_file(data_path)
@@ -83,15 +85,9 @@ def run_eval(
     )
 
     config = HashableGPT2Config.from_pretrained(
-        # "/mount/llm-post-training-tutorial/checkpoints/"
         model_path
     )
     model = transformers.FlaxGPT2LMHeadModel(config)
-
-    # model_path = "/mount/llm-post-training-tutorial/rl_bbb/checkpoint_4"
-    # model_path = "/mount/llm-post-training-tutorial/checkpoint_post_fix/checkpoint_680"
-
- 
 
     prng = jax.random.PRNGKey(0)
 
@@ -103,7 +99,8 @@ def run_eval(
     )
     model.params = restored_params["params"]
 
-    histogram = OperandHistogramCounter()
+    report = OperandHistogramCounter(model_name=model_name)
+
     sum_ = 0
     count = 0
     for batch in dataloader:
@@ -112,7 +109,6 @@ def run_eval(
 
         prng = jax.random.fold_in(prng, 0)
 
-        print(f"{prompt.shape=}")
         result = sample(
             model.config,
             model.__class__,
@@ -123,19 +119,38 @@ def run_eval(
             jax.random.split(prng, jax.local_device_count()),
             9,
             0.01,
-        ).reshape(batch_size, -1)
+        )
+        seq_len = result.shape[-1]
+        result = result.reshape(-1, seq_len)
 
         rewards = compute_reward(result, res).ravel()
         sum_ += rewards.sum().item()
         count += rewards.size
 
+        if verbose:
+            prompts = decode_tensor(prompt)
+            prompts = [" ".join(p) for p in prompts]
+
+            generations = decode_tensor(result)
+            generations = [" ".join(p) for p in generations]
+
+            for prompt, generation, reward in zip(prompts, generations, rewards.tolist()):
+                print(f"Prompt: {prompt}\nGeneration: {generation}\nReward: {reward}")
+                print()
+
         for row, reward in zip(result.tolist(), rewards.tolist()):
-            histogram.add(row, reward)
+            report.add(row, reward)
 
+    print(f"Averge reward:{sum_/count=} computed over {count} samples.")
 
-        print(f"{sum_=}, {count=}, {sum_/count=}")
-    histogram.plot_reward_histogram()
-    # histogram.print_report()
+    return report
+
 
 if __name__ == "__main__":
-    tyro.cli(run_eval)
+    report = tyro.cli(run_eval)
+    report.plot_histograms_per_operand()
+    plt.savefig(f"{report.model_name}_operand_histogram.png")
+    plt.figure()
+    report.plot_reward_histogram()
+    plt.xlabel("Reward")
+    plt.savefig(f"{report.model_name}_reward_histogram.png")

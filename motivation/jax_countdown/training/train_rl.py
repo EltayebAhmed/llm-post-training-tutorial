@@ -23,34 +23,34 @@ This script trains a Transformer on a LM1B dataset.
 # pytype: disable=wrong-arg-count
 # pytype: disable=attribute-error
 
+import functools
 import itertools
 from math import e
 import os
 import sys
 
-import jax
-import jax.numpy as jnp
-import functools
-import transformers
-
-from flax import linen as nn
 from flax import jax_utils
 from flax.training import checkpoints
-from flax.training import common_utils, train_state
+from flax.training import common_utils
+import jax
+import jax.numpy as jnp
 import optax
+import transformers
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from config import ConfigRL
 from preprocessing import (
-    TOKENS,
     REVERSE_TOKENS,
+    TOKENS,
+    decode_tensor,
     get_data_loader,
     load_dataset_from_file,
-    decode_tensor,
 )
-from sampling import sample, HashableGPT2Config
-from config import ConfigRL
-from train import create_learning_rate_schedule, train_step, TrainState
 from reward import compute_reward
+from sampling import HashableGPT2Config, sample
+from train import TrainState, create_learning_rate_schedule, train_step
+
+
 
 
 def unshard(x: jnp.ndarray):
@@ -65,13 +65,13 @@ def unshard(x: jnp.ndarray):
     return jax.tree_util.tree_map(lambda x: x.reshape((-1,) + x.shape[2:]), x)
 
 
-def train_and_evaluate(config: ConfigRL, workdir: str):
-    """Runs a training and evaluation loop.
+def rl_training_loop(config: ConfigRL, workdir: str):
+    """Runs a RL training loop.
 
     Args:
-      config: Configuration to use.
-      workdir: Working directory for checkpoints and TF summaries. If this
-        contains checkpoint training will be resumed from the latest checkpoint.
+        config: Configuration to use.
+        workdir: Working directory for checkpoints and TF summaries. If this
+            contains checkpoint training will be resumed from the latest checkpoint.
     """
     workdir = os.path.abspath(workdir)
     os.makedirs(workdir)
@@ -101,26 +101,12 @@ def train_and_evaluate(config: ConfigRL, workdir: str):
     print("Initializing model, optimizer, and step functions.")
     # Build Model and Optimizer
     # ---------------------------------------------------------------------------
-    # model_config = HashableGPT2Config(
-    #     vocab_size=len(TOKENS),
-    #     n_positions=config.max_target_length,
-    #     n_embd=config.emb_dim,
-    #     n_layer=config.num_layers,
-    #     n_head=config.num_heads,
-    #     n_inner=config.mlp_dim,
-    # )
     model_config = HashableGPT2Config.from_pretrained(config.base_model_path)
     model = transformers.FlaxGPT2LMHeadModel(model_config, seed=config.seed)
 
     learning_rate_fn = create_learning_rate_schedule(
         learning_rate=config.learning_rate, warmup_steps=config.warmup_steps
     )
-    # learning_rate_fn = optax.linear_schedule(
-    #     init_value=config.learning_rate,
-    #     end_value=0.0,
-    #     transition_steps=config.num_train_steps,
-    # )
-
 
     optimizer = optax.adamw(
         learning_rate_fn,
@@ -142,8 +128,6 @@ def train_and_evaluate(config: ConfigRL, workdir: str):
         tx=optimizer,
         dropout_rng=dropout_rng,
     )
-
-    model.params = state.params
 
     param_count = sum(p.size for p in jax.tree_leaves(state.params))
     print("Model has %d parameters.", param_count)
@@ -206,10 +190,13 @@ def train_and_evaluate(config: ConfigRL, workdir: str):
         # log reward before processing it
         train_rewards.append(rewards.mean())
 
+        # Normalize rewards. Recent research GRPO
+        # (https://arxiv.org/pdf/2402.03300) shows that normalizing
+        # rewards is improves training.
         rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-6)
         # rewards = rewards.astype(jnp.float32) / config.reward_scale
 
-        # Compute RLOO baseline.
+        # Compute Average of rollouts as baseline.
         rewards = rewards.reshape(config.num_rollouts, -1)
 
         rewards = rewards - rewards.mean(axis=0, keepdims=True)
@@ -223,7 +210,6 @@ def train_and_evaluate(config: ConfigRL, workdir: str):
         )
 
         train_losses.append(train_loss.mean())
-
 
         # Quick indication that training is happening.
         if step < 5:
@@ -242,7 +228,7 @@ def train_and_evaluate(config: ConfigRL, workdir: str):
             print("Saving checkpoint step %d.", step)
             to_checkpoint = jax_utils.unreplicate(state)
             checkpoints.save_checkpoint_multiprocess(workdir, to_checkpoint, step)
-            
+
             checkpoint_dir = os.path.join(workdir, f"checkpoint_{step}")
             model.save_pretrained(checkpoint_dir, params=to_checkpoint.params)
 
@@ -258,4 +244,4 @@ if __name__ == "__main__":
     print("Running training script.")
 
     cfg = tyro.cli(ConfigRL)
-    train_and_evaluate(cfg, cfg.save_dir)
+    rl_training_loop(cfg, cfg.save_dir)
