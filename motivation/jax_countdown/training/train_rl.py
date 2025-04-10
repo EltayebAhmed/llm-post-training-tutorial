@@ -25,7 +25,6 @@ This script trains a Transformer on a LM1B dataset.
 
 import functools
 import itertools
-from math import e
 import os
 import sys
 
@@ -37,32 +36,18 @@ import jax.numpy as jnp
 import optax
 import transformers
 
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from config import ConfigRL
 from preprocessing import (
-    REVERSE_TOKENS,
     TOKENS,
-    decode_tensor,
     get_data_loader,
     load_dataset_from_file,
 )
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from reward import compute_reward
-from sampling import HashableGPT2Config, sample
+from sampling import sample
 from train import TrainState, create_learning_rate_schedule, train_step
-
-
-
-
-def unshard(x: jnp.ndarray):
-    """Unshard a jax array.
-
-    Args:
-        x: A jax array.
-
-    Returns:
-        The unsharded array.
-    """
-    return jax.tree_util.tree_map(lambda x: x.reshape((-1,) + x.shape[2:]), x)
+from utils import load_model, unshard
 
 
 def rl_training_loop(config: ConfigRL, workdir: str):
@@ -101,9 +86,9 @@ def rl_training_loop(config: ConfigRL, workdir: str):
     print("Initializing model, optimizer, and step functions.")
     # Build Model and Optimizer
     # ---------------------------------------------------------------------------
-    model_config = HashableGPT2Config.from_pretrained(config.base_model_path)
-    model = transformers.FlaxGPT2LMHeadModel(model_config, seed=config.seed)
-
+    # model_config = HashableGPT2Config.from_pretrained(config.base_model_path)
+    # model = transformers.FlaxGPT2LMHeadModel(model_config, seed=config.seed)
+    model = load_model(config.base_model_path)
     learning_rate_fn = create_learning_rate_schedule(
         learning_rate=config.learning_rate, warmup_steps=config.warmup_steps
     )
@@ -116,15 +101,16 @@ def rl_training_loop(config: ConfigRL, workdir: str):
         weight_decay=config.weight_decay,
     )
 
-    checkpoint_path = os.path.abspath(config.base_model_path)
-    restored_params = checkpoints.restore_checkpoint(
-        checkpoint_path,
-        target=None,
-        step=None,
-    )
+    # checkpoint_path = os.path.abspath(config.base_model_path)
+    # restored_params = checkpoints.restore_checkpoint(
+    #     checkpoint_path,
+    #     target=None,
+    #     step=None,
+    # )
     state = TrainState.create(
         apply_fn=model.__call__,
-        params=restored_params["params"],
+        # params=restored_params["params"],
+        params=model.params,
         tx=optimizer,
         dropout_rng=dropout_rng,
     )
@@ -170,7 +156,7 @@ def rl_training_loop(config: ConfigRL, workdir: str):
         targets = jnp.repeat(targets, config.num_rollouts, axis=0)
 
         generations = sample(
-            model_config,
+            model.config,
             transformers.FlaxGPT2LMHeadModel,
             state.params,
             common_utils.shard(prompts),

@@ -47,8 +47,7 @@ from preprocessing import (
     get_data_loader,
     load_dataset_from_file,
 )
-
-
+from utils import TrainState
 
 
 def rsqrt_schedule(
@@ -133,7 +132,7 @@ def compute_weighted_cross_entropy(
     return loss.sum(), mask
 
 
-# Primary training 
+# Primary training
 # -----------------------------------------------------------------------------
 
 
@@ -176,15 +175,6 @@ def train_step(
     new_state = state.apply_gradients(grads=grads)
 
     return new_state, mean_loss, logits, mask
-
-
-class TrainState(train_state.TrainState):
-    dropout_rng: jnp.ndarray
-
-    def replicate(self):
-        return jax_utils.replicate(self).replace(
-            dropout_rng=common_utils.shard_prng_key(self.dropout_rng)
-        )
 
 
 def training_loop(config: Config, workdir: str):

@@ -10,19 +10,7 @@ import transformers
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from preprocessing import REVERSE_TOKENS, TOKENS, decode_tensor
-
-
-
-
-
-class HashableGPT2Config(transformers.GPT2Config):
-    """A hashable version of the GPT2Config class.
-
-    This can be passed as a static_arg to a jax jitted function."""
-
-    def __hash__(self):
-        return id(self)
-
+from utils import HashableGPT2Config
 
 @functools.partial(jax.pmap, static_broadcasted_argnums=(0, 1, 4, 5, 7, 8))
 def sample(

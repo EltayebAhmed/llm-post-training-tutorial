@@ -12,7 +12,7 @@ import optax
 import transformers
 import collections
 import matplotlib.pyplot as plt
-from transformers.agents import prompts
+
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from preprocessing import (
@@ -22,7 +22,8 @@ from preprocessing import (
     get_data_loader,
     load_dataset_from_file,
 )
-from sampling import sample, HashableGPT2Config
+from utils import load_model, HashableGPT2Config
+from sampling import sample
 from reward import compute_reward, extract_and_validate_equation
 import tyro
 
@@ -33,7 +34,12 @@ class OperandHistogramCounter:
         self.model_name = model_name
 
     def add(self, problem: list[int], reward: Optional[int] = None):
-
+        # Log the reward
+        if reward is not None:
+            self.rewards.append(reward)
+        
+        # Count the operands if the generation
+        # is a valid equation.
         try:
             eqn = extract_and_validate_equation(problem)
         except AssertionError:
@@ -44,8 +50,6 @@ class OperandHistogramCounter:
         for i, operand in enumerate(operands):
             self.operand_log[i].append( operand)
 
-        if reward is not None:
-            self.rewards.append(reward)
 
     def plot_histograms_per_operand(self, n_bins: int = 20):
         """Plots histograms for each operand."""
@@ -84,20 +88,21 @@ def run_eval(
         dataset, batch_size=batch_size, seq_len=31, prompt_seq_len=15, shuffle=False
     )
 
-    config = HashableGPT2Config.from_pretrained(
-        model_path
-    )
-    model = transformers.FlaxGPT2LMHeadModel(config)
+    # config = HashableGPT2Config.from_pretrained(
+    #     model_path
+    # )
+    # model = transformers.FlaxGPT2LMHeadModel(config)
 
     prng = jax.random.PRNGKey(0)
 
-    model_path = os.path.abspath(model_path)
-    restored_params = checkpoints.restore_checkpoint(
-        model_path,
-        target=None,
-        step=None,
-    )
-    model.params = restored_params["params"]
+    # model_path = os.path.abspath(model_path)
+    # restored_params = checkpoints.restore_checkpoint(
+    #     model_path,
+    #     target=None,
+    #     step=None,
+    # )
+    # model.params = restored_params["params"]
+    model = load_model(model_path)
 
     report = OperandHistogramCounter(model_name=model_name)
 
@@ -109,7 +114,7 @@ def run_eval(
 
         prng = jax.random.fold_in(prng, 0)
 
-        result = sample(
+        sampled_generation = sample(
             model.config,
             model.__class__,
             jax_utils.replicate(model.params),
@@ -120,10 +125,10 @@ def run_eval(
             9,
             0.01,
         )
-        seq_len = result.shape[-1]
-        result = result.reshape(-1, seq_len)
+        seq_len = sampled_generation.shape[-1]
+        sampled_generation = sampled_generation.reshape(-1, seq_len)
 
-        rewards = compute_reward(result, res).ravel()
+        rewards = compute_reward(sampled_generation, res).ravel()
         sum_ += rewards.sum().item()
         count += rewards.size
 
@@ -131,17 +136,17 @@ def run_eval(
             prompts = decode_tensor(prompt)
             prompts = [" ".join(p) for p in prompts]
 
-            generations = decode_tensor(result)
+            generations = decode_tensor(sampled_generation)
             generations = [" ".join(p) for p in generations]
 
             for prompt, generation, reward in zip(prompts, generations, rewards.tolist()):
                 print(f"Prompt: {prompt}\nGeneration: {generation}\nReward: {reward}")
                 print()
 
-        for row, reward in zip(result.tolist(), rewards.tolist()):
+        for row, reward in zip(sampled_generation.tolist(), rewards.tolist()):
             report.add(row, reward)
 
-    print(f"Averge reward:{sum_/count=} computed over {count} samples.")
+    print(f"Averge reward:{sum_/count} computed over {count} samples.")
 
     return report
 
@@ -152,5 +157,4 @@ if __name__ == "__main__":
     plt.savefig(f"{report.model_name}_operand_histogram.png")
     plt.figure()
     report.plot_reward_histogram()
-    plt.xlabel("Reward")
     plt.savefig(f"{report.model_name}_reward_histogram.png")
