@@ -307,4 +307,4 @@ if __name__ == "__main__":
     print("Running training script.")
 
     cfg = tyro.cli(Config)
-    train_and_evaluate(cfg, cfg.save_dir)
+    training_loop(cfg, cfg.save_dir)
